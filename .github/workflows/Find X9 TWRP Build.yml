@@ -35,15 +35,32 @@ jobs:
           chmod +x "$HOME/bin/repo"
           sudo ln -sf "$HOME/bin/repo" /usr/local/bin/repo
 
+      - name: Cache TWRP repo objects
+        uses: actions/cache@v4
+        with:
+          path: workspace/.repo
+          key: twrp-14.1-repo-${{ runner.os }}-${{ hashFiles('.github/workflows/Find X9 TWRP Build.yml') }}
+          restore-keys: |
+            twrp-14.1-repo-${{ runner.os }}-
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: twrp-14.1-ccache-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            twrp-14.1-ccache-${{ runner.os }}-
+
       - name: Initialize TWRP source
         working-directory: ${{ github.workspace }}
         run: |
+          set -euxo pipefail
           mkdir -p workspace
           cd workspace
           repo init --depth=1 \
             -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git \
             -b twrp-14.1
-          repo sync -c --force-sync --no-clone-bundle --no-tags -j"$(nproc --all)"
+          repo sync -c --force-sync --no-clone-bundle --no-tags -j8
           test -f build/envsetup.sh
 
       - name: Add OPPO Find X9 device tree
@@ -70,6 +87,10 @@ jobs:
         env:
           ALLOW_MISSING_DEPENDENCIES: 'true'
         run: |
+          export USE_CCACHE=1
+          export CCACHE_DIR="$HOME/.ccache"
+          ccache -M 10G
+          ccache -z
           source build/envsetup.sh
           lunch twrp_findx9-trunk_staging-eng
           # TWRP 14.1 recovery packaging may copy the device fstab into
@@ -80,6 +101,7 @@ jobs:
           test -s device/oppo/findx9/prebuilt/mt6993.dtb
           stat -c '%s %n' device/oppo/findx9/prebuilt/mt6993.dtb
           make vendorbootimage -j"$(nproc --all)"
+          ccache -s
 
       - name: Collect build artifacts
         if: always()
