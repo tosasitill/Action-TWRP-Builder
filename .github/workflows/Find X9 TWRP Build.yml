@@ -65,6 +65,10 @@ jobs:
         run: |
           source build/envsetup.sh
           lunch omni_findx9-eng
+          # TWRP 12.1's recovery ramdisk rule expects this staging directory
+          # even for vendor_boot-only devices; no standalone recovery partition
+          # is being built here.
+          mkdir -p out/target/product/findx9/root
           make vendorbootimage -j"$(nproc --all)"
 
       - name: Collect build artifacts
