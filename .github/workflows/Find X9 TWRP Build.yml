@@ -44,6 +44,7 @@ jobs:
             -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git \
             -b twrp-12.1
           repo sync -c --force-sync --no-clone-bundle --no-tags -j"$(nproc --all)"
+          test -f build/envsetup.sh
 
       - name: Add OPPO Find X9 device tree
         working-directory: workspace
