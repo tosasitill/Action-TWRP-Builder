@@ -71,7 +71,7 @@ jobs:
           ALLOW_MISSING_DEPENDENCIES: 'true'
         run: |
           source build/envsetup.sh
-          lunch omni_findx9-eng
+          lunch twrp_findx9-eng
           # TWRP 14.1 recovery packaging may copy the device fstab into
           # system/etc before the empty staging tree exists.
           mkdir -p out/target/product/findx9/root/system/etc
@@ -108,6 +108,7 @@ jobs:
           body: |
             Device: OPPO Find X9 PLJ110 / OP5E17L1
             Target: vendor_boot.img
+            Product: twrp_findx9-eng
             Manifest: TWRP 14.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
