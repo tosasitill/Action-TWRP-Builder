@@ -92,7 +92,7 @@ jobs:
           ccache -M 10G
           ccache -z
           source build/envsetup.sh
-          lunch twrp_findx9-trunk_staging-eng
+          lunch twrp_findx9-ap2a-eng
           # TWRP 14.1 recovery packaging may copy the device fstab into
           # system/etc before the empty staging tree exists.
           mkdir -p out/target/product/findx9/root/system/etc
