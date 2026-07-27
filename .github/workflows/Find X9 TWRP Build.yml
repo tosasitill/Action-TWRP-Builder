@@ -54,9 +54,16 @@ jobs:
             -b main device/oppo/findx9
 
       - name: Add swap
-        uses: pierotofy/set-swap-space@master
-        with:
-          swap-size-gb: 12
+        run: |
+          set -euxo pipefail
+          if ! swapon --show | grep -q .; then
+            sudo fallocate -l 12G /swapfile-findx9
+            sudo chmod 600 /swapfile-findx9
+            sudo mkswap /swapfile-findx9
+            sudo swapon /swapfile-findx9
+          fi
+          free -h
+          swapon --show
 
       - name: Build vendor_boot image
         working-directory: workspace
@@ -65,11 +72,13 @@ jobs:
         run: |
           source build/envsetup.sh
           lunch omni_findx9-eng
-          # TWRP 12.1's recovery packaging rule copies the device fstab into
-          # system/etc but does not create that directory for an empty tree.
+          # TWRP 14.1 recovery packaging may copy the device fstab into
+          # system/etc before the empty staging tree exists.
           mkdir -p out/target/product/findx9/root/system/etc
           mkdir -p out/target/product/findx9/recovery/root/system/etc
-          # BoardConfig supplies the verified stock DTB and the v4 header.
+          mkdir -p out/target/product/findx9/vendor_ramdisk
+          test -s device/oppo/findx9/prebuilt/mt6993.dtb
+          stat -c '%s %n' device/oppo/findx9/prebuilt/mt6993.dtb
           make vendorbootimage -j"$(nproc --all)"
 
       - name: Collect build artifacts
