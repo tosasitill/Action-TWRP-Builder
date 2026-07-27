@@ -1,0 +1,99 @@
+name: Find X9 TWRP Build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    if: github.event.repository.owner.id == github.event.sender.id
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout builder
+        uses: actions/checkout@v4
+
+      - name: Prepare build environment
+        run: |
+          sudo apt-get update
+          DEBIAN_FRONTEND=noninteractive sudo apt-get install -y \
+            bc bison build-essential ccache curl flex g++-multilib gcc-multilib \
+            git lib32ncurses-dev lib32readline-dev lib32z1-dev liblz4-tool \
+            libncurses-dev libssl-dev libxml2-utils lzop pngcrush \
+            rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3
+
+      - name: Install Java 11
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: '11'
+
+      - name: Install repo
+        run: |
+          mkdir -p "$HOME/bin"
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
+          chmod +x "$HOME/bin/repo"
+          sudo ln -sf "$HOME/bin/repo" /usr/local/bin/repo
+
+      - name: Initialize TWRP source
+        working-directory: ${{ github.workspace }}
+        run: |
+          mkdir -p workspace
+          cd workspace
+          repo init --depth=1 \
+            -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git \
+            -b twrp-12.1
+          repo sync -c --force-sync --no-clone-bundle --no-tags -j"$(nproc --all)"
+
+      - name: Add OPPO Find X9 device tree
+        working-directory: workspace
+        run: |
+          git clone --depth=1 \
+            https://github.com/tosasitill/android_device_oppo_plj110.git \
+            -b main device/oppo/findx9
+
+      - name: Add swap
+        uses: pierotofy/set-swap-space@master
+        with:
+          swap-size-gb: 12
+
+      - name: Build vendor_boot image
+        working-directory: workspace
+        env:
+          ALLOW_MISSING_DEPENDENCIES: 'true'
+        run: |
+          source build/envsetup.sh
+          lunch omni_findx9-eng
+          make clean
+          make vendorbootimage -j"$(nproc --all)"
+
+      - name: Collect build artifacts
+        if: always()
+        run: |
+          mkdir -p artifacts
+          find workspace/out/target/product/findx9 -maxdepth 1 -type f \
+            \( -name '*.img' -o -name '*.zip' -o -name '*.txt' \) \
+            -exec cp -v {} artifacts/ \; 2>/dev/null || true
+          cp -v workspace/out/soong.log artifacts/ 2>/dev/null || true
+
+      - name: Upload workflow artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: findx9-twrp-${{ github.run_number }}
+          path: artifacts/
+          if-no-files-found: warn
+
+      - name: Upload release artifacts
+        if: success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: findx9-${{ github.run_number }}
+          name: Find X9 TWRP build ${{ github.run_number }}
+          files: artifacts/*
+          body: |
+            Device: OPPO Find X9 PLJ110 / OP5E17L1
+            Target: vendor_boot.img
+            Manifest: TWRP 12.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
