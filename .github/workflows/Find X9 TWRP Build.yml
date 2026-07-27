@@ -97,6 +97,8 @@ jobs:
           # system/etc before the empty staging tree exists.
           mkdir -p out/target/product/findx9/root/system/etc
           mkdir -p out/target/product/findx9/recovery/root/system/etc
+          mkdir -p out/target/product/findx9/root/linkerconfig
+          mkdir -p out/target/product/findx9/recovery/root/linkerconfig
           mkdir -p out/target/product/findx9/vendor_ramdisk
           test -s device/oppo/findx9/prebuilt/mt6993.dtb
           stat -c '%s %n' device/oppo/findx9/prebuilt/mt6993.dtb
