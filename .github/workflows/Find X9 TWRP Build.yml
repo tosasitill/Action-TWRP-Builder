@@ -188,6 +188,82 @@ jobs:
           PYCODE
           test "$(stat -c '%s' out/target/product/findx9/vendor_boot_stock_twrp.img)" -eq 100663296
 
+      - name: Verify composed vendor_boot layout
+        working-directory: workspace
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import gzip
+          import pathlib
+          import struct
+          import subprocess
+
+          image = pathlib.Path('out/target/product/findx9/vendor_boot_stock_twrp.img').read_bytes()
+          U = lambda off: struct.unpack_from('<I', image, off)[0]
+          page = U(12)
+          ramdisk_size = U(24)
+          dtb_size = U(2100)
+          table_size = U(2112)
+          entry_num = U(2116)
+          entry_size = U(2120)
+          bootconfig_size = U(2124)
+          assert image[:8] == b'VNDRBOOT'
+          assert U(8) == 4 and page == 4096 and entry_num == 2
+          dtb_off = page + ((ramdisk_size + page - 1) // page) * page
+          table_off = dtb_off + ((dtb_size + page - 1) // page) * page
+          bootconfig_off = table_off + ((table_size + page - 1) // page) * page
+          table = image[table_off:table_off + table_size]
+          entries = []
+          for i in range(entry_num):
+              size, offset, typ = struct.unpack_from('<III', table, i * entry_size)
+              name = table[i * entry_size + 12:i * entry_size + 44].split(b'\0', 1)[0].decode()
+              entries.append((size, offset, typ, name))
+          assert entries[0][2] == 1 and entries[0][1] == 0
+          assert entries[1][2] == 2 and entries[1][3] == 'recovery'
+          assert entries[1][1] == entries[0][0]
+
+          out = pathlib.Path('verify-vendor-boot')
+          out.mkdir(exist_ok=True)
+          report = []
+          report.append(f'header_version={U(8)}')
+          report.append(f'page_size={page}')
+          report.append(f'ramdisk_size={ramdisk_size}')
+          report.append(f'dtb_size={dtb_size}')
+          report.append(f'bootconfig_size={bootconfig_size}')
+          report.append(f'entry0_platform_size={entries[0][0]}')
+          report.append(f'entry1_recovery_size={entries[1][0]}')
+
+          def unpack_fragment(index):
+              size, offset, typ, name = entries[index]
+              compressed = image[page + offset:page + offset + size]
+              path = out / f'fragment-{index}.compressed'
+              raw_path = out / f'fragment-{index}.cpio'
+              path.write_bytes(compressed)
+              if compressed[:2] == b'\x1f\x8b':
+                  raw = gzip.decompress(compressed)
+              else:
+                  subprocess.run(['lz4', '-d', '-f', str(path), str(raw_path)], check=True)
+                  raw = raw_path.read_bytes()
+              raw_path.write_bytes(raw)
+              listing = subprocess.check_output(['bsdtar', '-tf', str(raw_path)], text=True)
+              names = set(listing.splitlines())
+              report.append(f'fragment{index}_cpio_entries={len(names)}')
+              return names
+
+          platform_names = unpack_fragment(0)
+          recovery_names = unpack_fragment(1)
+          for required in ('first_stage_ramdisk/fstab.mt6993', 'lib/modules/modules.load.recovery', 'system/bin/recovery'):
+              report.append(f'platform_has_{required}={required in platform_names}')
+          for required in ('system/etc/recovery.fstab', 'twres/ui.xml', 'twres/portrait.xml'):
+              report.append(f'recovery_has_{required}={required in recovery_names}')
+          assert 'first_stage_ramdisk/fstab.mt6993' in platform_names
+          assert 'lib/modules/modules.load.recovery' in platform_names
+          assert 'system/etc/recovery.fstab' in recovery_names
+          assert 'twres/ui.xml' in recovery_names
+          (out / 'layout.txt').write_text('\n'.join(report) + '\n')
+          print('\n'.join(report))
+          PYCODE
+
       - name: Collect build artifacts
         if: always()
         run: |
@@ -197,6 +273,7 @@ jobs:
             -exec cp -v {} artifacts/ \; 2>/dev/null || true
           cp -v workspace/out/target/product/findx9/vendor_boot_stock_twrp.img artifacts/ 2>/dev/null || true
           cp -v workspace/out/soong.log artifacts/ 2>/dev/null || true
+          cp -v workspace/verify-vendor-boot/layout.txt artifacts/ 2>/dev/null || true
 
       - name: Upload workflow artifacts
         if: always()
@@ -219,6 +296,15 @@ jobs:
         with:
           path: ~/.ccache
           key: twrp-14.1-ccache-${{ runner.os }}-${{ github.run_id }}
+
+      - name: Free runner disk before cache finalization
+        if: always()
+        run: |
+          set +e
+          sudo swapoff /swapfile-findx9 2>/dev/null || true
+          sudo rm -f /swapfile-findx9
+          rm -rf workspace/out workspace/stock-input
+          df -h
 
       - name: Upload release artifacts
         if: success()
