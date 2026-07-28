@@ -105,6 +105,75 @@ jobs:
           make vendorbootimage -j"$(nproc --all)"
           ccache -s
 
+      - name: Compose stock-based vendor_boot
+        working-directory: workspace
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          mkdir -p stock-input
+          gh release download findx9-16 \
+            --repo tosasitill/Action-TWRP-Builder \
+            --pattern stock_vendor_boot_b.img \
+            --dir stock-input
+          test "$(stat -c '%s' stock-input/stock_vendor_boot_b.img)" -eq 100663296
+          recovery_fragment=$(find out/target/product/findx9/obj/PACKAGING/vendor_ramdisk_fragments_intermediates -name 'recovery.cpio.gz' -type f -size +0c | head -1)
+          test -n "$recovery_fragment"
+          python3 - "$recovery_fragment" stock-input/stock_vendor_boot_b.img out/target/product/findx9/vendor_boot_stock_twrp.img <<'PY'
+          import struct, sys
+          from pathlib import Path
+          recovery_path, stock_path, out_path = map(Path, sys.argv[1:])
+          stock = bytearray(stock_path.read_bytes())
+          recovery = recovery_path.read_bytes()
+          U = lambda off, fmt='<I': struct.unpack_from(fmt, stock, off)[0]
+          page = U(12)
+          old_ramdisk_size = U(24)
+          header_size = U(2096)
+          dtb_size = U(2100)
+          table_size = U(2112)
+          entry_num = U(2116)
+          entry_size = U(2120)
+          bootconfig_size = U(2124)
+          assert U(8) == 4 and page == 4096 and header_size == 2128
+          assert entry_num == 2 and entry_size == 108
+          assert table_size == entry_num * entry_size and dtb_size > 0
+          ramdisk_off = page
+          dtb_off = ramdisk_off + ((old_ramdisk_size + page - 1) // page) * page
+          table_off = dtb_off + ((dtb_size + page - 1) // page) * page
+          bootconfig_off = table_off + ((table_size + page - 1) // page) * page
+          old_platform_size = U(table_off)
+          old_recovery_off = U(table_off + entry_size)
+          assert old_recovery_off == old_platform_size
+          platform = bytes(stock[ramdisk_off:ramdisk_off + old_platform_size])
+          new_ramdisk = platform + recovery
+          new_ramdisk_size = len(new_ramdisk)
+          dtb = bytes(stock[dtb_off:dtb_off + dtb_size])
+          table = bytearray(stock[table_off:table_off + table_size])
+          bootconfig = bytes(stock[bootconfig_off:bootconfig_off + bootconfig_size])
+          struct.pack_into('<I', table, 0, old_platform_size)
+          struct.pack_into('<I', table, entry_size, len(recovery))
+          struct.pack_into('<I', table, entry_size + 4, old_platform_size)
+          result = bytearray(stock[:page])
+          struct.pack_into('<I', result, 24, new_ramdisk_size)
+          result.extend(new_ramdisk)
+          result.extend(b'\0' * ((page - len(result) % page) % page))
+          result.extend(dtb)
+          result.extend(b'\0' * ((page - len(result) % page) % page))
+          result.extend(table)
+          result.extend(b'\0' * ((page - len(result) % page) % page))
+          result.extend(bootconfig)
+          result.extend(b'\0' * ((page - len(result) % page) % page))
+          assert len(result) <= 100663296
+          result.extend(b'\0' * (100663296 - len(result)))
+          out_path.write_bytes(result)
+          print('platform_fragment=', old_platform_size)
+          print('recovery_fragment=', len(recovery))
+          print('vendor_ramdisk_size=', new_ramdisk_size)
+          print('vendor_boot_size=', len(result))
+          print('dtb_size=', len(dtb), 'bootconfig_size=', len(bootconfig))
+          PY
+          test "$(stat -c '%s' out/target/product/findx9/vendor_boot_stock_twrp.img)" -eq 100663296
+
       - name: Collect build artifacts
         if: always()
         run: |
@@ -112,6 +181,7 @@ jobs:
           find workspace/out/target/product/findx9 -maxdepth 1 -type f \
             \( -name '*.img' -o -name '*.zip' -o -name '*.txt' \) \
             -exec cp -v {} artifacts/ \; 2>/dev/null || true
+          cp -v workspace/out/target/product/findx9/vendor_boot_stock_twrp.img artifacts/ 2>/dev/null || true
           cp -v workspace/out/soong.log artifacts/ 2>/dev/null || true
 
       - name: Upload workflow artifacts
