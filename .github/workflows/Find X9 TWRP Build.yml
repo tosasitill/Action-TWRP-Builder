@@ -43,8 +43,9 @@ jobs:
           restore-keys: |
             twrp-14.1-repo-${{ runner.os }}-
 
-      - name: Cache ccache
-        uses: actions/cache@v4
+      - name: Restore ccache
+        id: ccache-restore
+        uses: actions/cache/restore@v4
         with:
           path: ~/.ccache
           key: twrp-14.1-ccache-${{ runner.os }}-${{ github.run_id }}
@@ -86,15 +87,18 @@ jobs:
         working-directory: workspace
         env:
           ALLOW_MISSING_DEPENDENCIES: 'true'
+          USE_CCACHE: '1'
+          CCACHE_DIR: /home/runner/.ccache
+          CCACHE_EXEC: /usr/bin/ccache
         run: |
-          export USE_CCACHE=1
-          export CCACHE_DIR="$HOME/.ccache"
+          set -euxo pipefail
+          export PATH="/usr/lib/ccache:$PATH"
           ccache -M 10G
-          ccache -z
+          ccache --zero-stats
+          ccache --show-config
+          command -v ccache
           source build/envsetup.sh
           lunch twrp_findx9-ap2a-eng
-          # TWRP 14.1 recovery packaging may copy the device fstab into
-          # system/etc before the empty staging tree exists.
           mkdir -p out/target/product/findx9/root/system/etc
           mkdir -p out/target/product/findx9/recovery/root/system/etc
           mkdir -p out/target/product/findx9/root/linkerconfig
@@ -103,7 +107,7 @@ jobs:
           test -s device/oppo/findx9/prebuilt/mt6993.dtb
           stat -c '%s %n' device/oppo/findx9/prebuilt/mt6993.dtb
           make vendorbootimage -j"$(nproc --all)"
-          ccache -s
+          ccache --show-stats
 
       - name: Compose stock-based vendor_boot
         working-directory: workspace
@@ -120,13 +124,15 @@ jobs:
           test "$(stat -c '%s' stock-input/stock_vendor_boot_b.img)" -eq 100663296
           recovery_fragment=$(find out/target/product/findx9/obj/PACKAGING/vendor_ramdisk_fragments_intermediates -name 'recovery.cpio.gz' -type f -size +0c | head -1)
           test -n "$recovery_fragment"
-          python3 - "$recovery_fragment" stock-input/stock_vendor_boot_b.img out/target/product/findx9/vendor_boot_stock_twrp.img <<'PY'
-          import struct, sys
+          python3 - "$recovery_fragment" stock-input/stock_vendor_boot_b.img out/target/product/findx9/vendor_boot_stock_twrp.img <<'PYCODE'
+          import struct
+          import sys
           from pathlib import Path
+
           recovery_path, stock_path, out_path = map(Path, sys.argv[1:])
-          stock = bytearray(stock_path.read_bytes())
+          stock = stock_path.read_bytes()
           recovery = recovery_path.read_bytes()
-          U = lambda off, fmt='<I': struct.unpack_from(fmt, stock, off)[0]
+          U = lambda off: struct.unpack_from('<I', stock, off)[0]
           page = U(12)
           old_ramdisk_size = U(24)
           header_size = U(2096)
@@ -135,27 +141,34 @@ jobs:
           entry_num = U(2116)
           entry_size = U(2120)
           bootconfig_size = U(2124)
+          assert stock[:8] == b'VNDRBOOT'
           assert U(8) == 4 and page == 4096 and header_size == 2128
           assert entry_num == 2 and entry_size == 108
           assert table_size == entry_num * entry_size and dtb_size > 0
+
           ramdisk_off = page
           dtb_off = ramdisk_off + ((old_ramdisk_size + page - 1) // page) * page
           table_off = dtb_off + ((dtb_size + page - 1) // page) * page
           bootconfig_off = table_off + ((table_size + page - 1) // page) * page
-          old_platform_size = U(table_off)
-          old_recovery_off = U(table_off + entry_size)
-          assert old_recovery_off == old_platform_size
-          platform = bytes(stock[ramdisk_off:ramdisk_off + old_platform_size])
-          new_ramdisk = platform + recovery
-          new_ramdisk_size = len(new_ramdisk)
-          dtb = bytes(stock[dtb_off:dtb_off + dtb_size])
           table = bytearray(stock[table_off:table_off + table_size])
-          bootconfig = bytes(stock[bootconfig_off:bootconfig_off + bootconfig_size])
-          struct.pack_into('<I', table, 0, old_platform_size)
+
+          platform_size, platform_offset, platform_type = struct.unpack_from('<III', table, 0)
+          recovery_size, recovery_offset, recovery_type = struct.unpack_from('<III', table, entry_size)
+          assert platform_type == 1 and platform_offset == 0
+          assert recovery_type == 2 and recovery_offset == platform_size
+          assert platform_size + recovery_size <= old_ramdisk_size
+
+          platform = stock[ramdisk_off:ramdisk_off + platform_size]
+          dtb = stock[dtb_off:dtb_off + dtb_size]
+          bootconfig = stock[bootconfig_off:bootconfig_off + bootconfig_size]
+          new_ramdisk = platform + recovery
+
+          struct.pack_into('<I', table, 0, platform_size)
           struct.pack_into('<I', table, entry_size, len(recovery))
-          struct.pack_into('<I', table, entry_size + 4, old_platform_size)
+          struct.pack_into('<I', table, entry_size + 4, platform_size)
+
           result = bytearray(stock[:page])
-          struct.pack_into('<I', result, 24, new_ramdisk_size)
+          struct.pack_into('<I', result, 24, len(new_ramdisk))
           result.extend(new_ramdisk)
           result.extend(b'\0' * ((page - len(result) % page) % page))
           result.extend(dtb)
@@ -167,12 +180,12 @@ jobs:
           assert len(result) <= 100663296
           result.extend(b'\0' * (100663296 - len(result)))
           out_path.write_bytes(result)
-          print('platform_fragment=', old_platform_size)
+          print('platform_fragment=', platform_size)
           print('recovery_fragment=', len(recovery))
-          print('vendor_ramdisk_size=', new_ramdisk_size)
+          print('vendor_ramdisk_size=', len(new_ramdisk))
           print('vendor_boot_size=', len(result))
           print('dtb_size=', len(dtb), 'bootconfig_size=', len(bootconfig))
-          PY
+          PYCODE
           test "$(stat -c '%s' out/target/product/findx9/vendor_boot_stock_twrp.img)" -eq 100663296
 
       - name: Collect build artifacts
@@ -192,6 +205,20 @@ jobs:
           name: findx9-twrp-${{ github.run_number }}
           path: artifacts/
           if-no-files-found: warn
+
+      - name: Show and save ccache stats
+        if: always()
+        working-directory: workspace
+        run: |
+          ccache --show-stats || true
+          du -sh "$HOME/.ccache" || true
+
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: twrp-14.1-ccache-${{ runner.os }}-${{ github.run_id }}
 
       - name: Upload release artifacts
         if: success()
