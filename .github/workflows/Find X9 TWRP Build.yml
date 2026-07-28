@@ -91,7 +91,7 @@ jobs:
           CCACHE_DIR: /home/runner/.ccache
           CCACHE_EXEC: /usr/bin/ccache
         run: |
-          set -euxo pipefail
+          set -eo pipefail
           export PATH="/usr/lib/ccache:$PATH"
           ccache -M 10G
           ccache --zero-stats
