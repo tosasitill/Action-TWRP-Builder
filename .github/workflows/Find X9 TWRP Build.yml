@@ -114,8 +114,9 @@ jobs:
           mkdir -p stock-input
           gh release download findx9-16 \
             --repo tosasitill/Action-TWRP-Builder \
-            --pattern stock_vendor_boot_b.img \
+            --pattern vendor_boot_b.img \
             --dir stock-input
+          mv stock-input/vendor_boot_b.img stock-input/stock_vendor_boot_b.img
           test "$(stat -c '%s' stock-input/stock_vendor_boot_b.img)" -eq 100663296
           recovery_fragment=$(find out/target/product/findx9/obj/PACKAGING/vendor_ramdisk_fragments_intermediates -name 'recovery.cpio.gz' -type f -size +0c | head -1)
           test -n "$recovery_fragment"
